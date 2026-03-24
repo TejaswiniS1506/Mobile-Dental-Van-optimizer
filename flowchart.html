@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Architecture — Mobile Dental Van Optimizer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Helvetica Neue',Arial,sans-serif;background:#fff}
+.fade-in{animation:fadeIn 0.35s ease both}
+@keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.node-card{transition:transform 0.2s,box-shadow 0.2s;cursor:pointer}
+.node-card:hover{transform:scale(1.03);box-shadow:0 4px 12px rgba(128,0,0,0.22)!important}
+button{cursor:pointer;font-family:inherit}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const {useState,createElement:h}=React;
+const M='#800000',DM='#600000',LB='#FDF5F5',W='#FFFFFF',D='#2D2D2D',G='#666666';
+
+const sections=[
+  {id:'overview',label:'Full Model Overview',subtitle:'Click any section below to zoom in'},
+  {id:'site-data',label:'Site Location Data',subtitle:'Input parameters from CSV upload',detail:['Senior Population at each location (default: 200 per site)','GPS Coordinates (lat/lon) for haversine distance calculation','Street Address for each senior center','Nearest Parking location for van staging','Closest UCM Facility name (from hospital_name column)','Distance to Closest UCM Facility (miles)'],color:M},
+  {id:'economic',label:'Economic Parameters',subtitle:'Cost drivers adjustable in real-time via sidebar',detail:['Fuel Price — live EIA API feed, default $3.50/gal','Staff Hourly Wage — combined dentist + assistant, default $155','Fixed Daily Overhead — rent, admin, insurance, default $200','Variable Cost Per Patient — supplies, materials, default $20'],color:M},
+  {id:'operations',label:'Operational Capacity',subtitle:'Van configuration and logistics constraints',detail:['Dental Chairs — 1 to 4 chairs in the van (default: 2)','Shift Length — 4 to 12 hours per deployment day (default: 8)','Average Transit Speed — urban driving speed in MPH (default: 18)'],color:M},
+  {id:'strategy',label:'Optimization Strategy',subtitle:'Controls how sites are ranked and prioritized',detail:['Capture Rate — % of senior pop expected to seek care (10–100%)','Reach vs. Cost Weight — slider balances volume against efficiency','W_volume (default 0.7) prioritizes reaching more patients','W_cost (default 0.3) prioritizes lower cost per acquisition'],formula:'Score = W_vol × (Vol/MaxVol) − W_cost × (CPA/MaxCPA)',color:M},
+  {id:'distance',label:'Distance Calculation Engine',subtitle:'Haversine formula — great-circle distance on Earth\'s surface',detail:['Calculates straight-line miles from UCM base (41.7896, -87.5996) to each site','Uses GPS coordinates from the uploaded CSV','Distance drives both travel time and fuel cost calculations','Also surfaces pre-computed distance to nearest UCM facility'],formula:'dist = R × 2 × atan2(√a, √(1−a))   where R = 3,958.8 mi',color:DM},
+  {id:'capacity',label:'Capacity Engine',subtitle:'How many patients can be seen per deployment day at each site',detail:['Step 1: Round-trip travel time = (dist × 2 / speed) × 60 min','Step 2: Setup time = 60 min + parking adjustment','Step 3: Available Minutes = (shift × 60) − setup − travel','Step 4: Daily Capacity = floor(available_min / 60) × chairs','A nearby site (~2 mi) with 2 chairs yields ~12 patients/day','A distant site (~15 mi) yields far fewer due to transit overhead'],formula:'capacity = floor((shift×60 − 60 − travel − parking) / 60) × chairs',color:DM},
+  {id:'cost',label:'Cost Engine',subtitle:'Financial modeling — daily operating cost through CPA',detail:['Daily Cost = fixed_overhead + (shift_hrs × hourly_wage) + fuel_cost','Fuel Cost = (dist × 2 / 10 mpg) × gas_price','Total Cost = (days_required × daily_cost) + (volume × var_cost)','Cost Per Acquisition (CPA) = total_cost / volume','Lower CPA = more cost-efficient site','Sensitivity analysis tests CPA response to ±50% cost driver changes'],formula:'CPA = (ceil(vol/cap) × daily_cost + vol × var_cost) / volume',color:DM},
+  {id:'scoring',label:'Optimization Scoring',subtitle:'Weighted composite score balancing reach against efficiency',detail:['Volume: normalized patient reach (Vol / MaxVol across all sites)','Cost: normalized CPA (CPA / MaxCPA across all sites)','W_volume (default 0.7) rewards high-demand sites','W_cost (default 0.3) penalizes expensive-to-serve sites','Sites ranked by descending score — Rank 1 is priority target','All weights adjustable in real-time via the sidebar'],formula:'Score = W_vol × (Vol/MaxVol) − W_cost × (CPA/MaxCPA)',color:DM},
+  {id:'traffic',label:'Hospital Traffic Analysis',subtitle:'EPIC data reveals optimal deployment windows',detail:['Wednesday: 972 appointments — busiest day','Thursday: 920 — second busiest','Monday: 794 — above average','Tuesday: 227 — 63% below average ← DEPLOY','Friday: 194 — 69% below average ← DEPLOY','Staff freed Tue/Fri without disrupting fixed-site operations'],color:M,isChart:true,chartData:[{day:'Mon',val:794},{day:'Tue',val:227,deploy:true},{day:'Wed',val:972},{day:'Thu',val:920},{day:'Fri',val:194,deploy:true}]},
+  {id:'scheduler',label:'Deployment Scheduler',subtitle:'Dynamic rolling calendar with demand-driven site assignment',detail:['Each deployment day: pick site with HIGHEST remaining demand','Serve up to Daily Capacity patients at that site','Subtract served patients from remaining demand','Next day: re-evaluate — a different site may now rank higher','Loop until all demand met OR scheduling horizon ends','Outputs: calendar, patients served, unmet demand report'],formula:'each day: site = argmax(remaining); remaining -= min(cap, remaining)',color:DM},
+  {id:'outputs',label:'Final Outputs',subtitle:'Everything the dashboard delivers to leadership',detail:['★ Site Rankings — score-ordered priority list with all metrics','Cost Per Acquisition — per-site and portfolio mean CPA ($)','Patient Reach — volume per site and total across all sites','Days to Harvest — deployment days needed per site','Sensitivity Analysis — CPA response to ±50% cost driver changes','★ Deployment Calendar — rolling week-by-week schedule','Interactive Mapbox geographic map with hover details','Unmet Demand Report — remaining patients per site after horizon','Excel Export (.xlsx) — site rankings + full deployment schedule'],color:M},
+];
+
+const flowSteps=[
+  {label:'Data Inputs',ids:['site-data','economic','operations','strategy']},
+  {label:'Engines',ids:['distance','capacity','cost']},
+  {label:'Scoring',ids:['scoring']},
+  {label:'Analysis',ids:['traffic']},
+  {label:'Scheduling',ids:['scheduler']},
+  {label:'Outputs',ids:['outputs']},
+];
+
+function MiniBar({data}){
+  const mx=Math.max(...data.map(d=>d.val));
+  return h('div',{style:{display:'flex',alignItems:'flex-end',gap:6,height:110,marginTop:16}},
+    data.map((d,i)=>h('div',{key:i,style:{display:'flex',flexDirection:'column',alignItems:'center',flex:1}},
+      h('span',{style:{fontSize:11,fontWeight:700,color:d.deploy?M:D,marginBottom:4}},d.val),
+      h('div',{style:{width:'100%',height:`${(d.val/mx)*80}px`,background:d.deploy?M:'#6BAED6',borderRadius:'3px 3px 0 0'}}),
+      h('span',{style:{fontSize:10,marginTop:4,fontWeight:d.deploy?800:500,color:d.deploy?M:G}},d.day)
+    ))
+  );
+}
+
+function App(){
+  const [active,setActive]=useState('overview');
+  const allIds=sections.filter(s=>s.id!=='overview').map(s=>s.id);
+  const curIdx=allIds.indexOf(active);
+  const isOverview=active==='overview';
+  const as=sections.find(s=>s.id===active);
+  const go=(id)=>setActive(prev=>prev===id?'overview':id);
+
+  return h('div',{style:{background:W,fontFamily:"'Helvetica Neue',Arial,sans-serif",minHeight:'100vh',paddingBottom:60}},
+    h('div',{style:{background:M,padding:'14px 24px',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+      h('div',null,
+        h('div',{style:{color:W,fontSize:16,fontWeight:800,letterSpacing:1,textTransform:'uppercase'}},'Model Architecture — Mobile Dental Van Optimizer'),
+        h('div',{style:{color:'#DDD',fontSize:11,marginTop:2}},'University of Chicago Medicine | Harris Policy Lab 2026')
+      ),
+      !isOverview&&h('button',{onClick:()=>go('overview'),style:{background:'rgba(255,255,255,0.15)',border:'1px solid rgba(255,255,255,0.3)',color:W,padding:'6px 16px',borderRadius:6,fontSize:12,fontWeight:600}},'← Back to Overview')
+    ),
+    h('div',{style:{background:'#F8F8F8',borderBottom:`2px solid ${M}`,padding:'8px 24px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+      flowSteps.map((step,i)=>{
+        const isAct=step.ids.includes(active);
+        return h('div',{key:step.label,style:{display:'flex',alignItems:'center',gap:6}},
+          h('div',{style:{background:isAct?M:'transparent',color:isAct?W:G,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:700,border:`1.5px solid ${isAct?M:'#DDD'}`}},step.label),
+          i<flowSteps.length-1&&h('svg',{width:14,height:12},h('path',{d:'M2 6 L10 6 M7 3 L10 6 L7 9',stroke:'#CCC',strokeWidth:1.5,fill:'none'}))
+        );
+      })
+    ),
+    h('div',{style:{padding:'20px 24px'}},
+      isOverview?h('div',null,
+        h('div',{style:{textAlign:'center',marginBottom:20,fontSize:14,color:G,fontWeight:500}},'Click any card to explore details — use arrows to navigate between sections'),
+        h('div',{style:{display:'flex',gap:10,alignItems:'flex-start',overflowX:'auto',paddingBottom:12}},
+          flowSteps.map((step,si)=>h('div',{key:step.label,style:{display:'flex',alignItems:'flex-start',gap:10}},
+            h('div',{style:{minWidth:165}},
+              h('div',{style:{fontSize:10,fontWeight:700,color:M,letterSpacing:1,textTransform:'uppercase',marginBottom:6,textAlign:'center',borderBottom:`2px solid ${M}`,paddingBottom:3}},step.label),
+              h('div',{style:{display:'flex',flexDirection:'column',gap:7}},
+                step.ids.map(id=>{
+                  const sec=sections.find(s=>s.id===id);
+                  if(!sec)return null;
+                  const isEng=['distance','capacity','cost','scoring','scheduler'].includes(id);
+                  return h('div',{key:id,className:'node-card',onClick:()=>go(id),style:{background:isEng?M:LB,color:isEng?W:D,border:`1.5px solid ${M}`,borderRadius:7,padding:'10px 12px',boxShadow:'0 2px 6px rgba(0,0,0,0.08)'}},
+                    h('div',{style:{fontSize:12,fontWeight:700}},(isEng?'◆ ':'')+sec.label),
+                    h('div',{style:{fontSize:10,opacity:0.72,marginTop:2}},sec.subtitle)
+                  );
+                })
+              )
+            ),
+            si<flowSteps.length-1&&h('div',{style:{paddingTop:45}},
+              h('svg',{width:24,height:20},h('path',{d:'M2 10 L18 10 M14 5 L20 10 L14 15',stroke:M,strokeWidth:2.5,fill:'none'}))
+            )
+          ))
+        ),
+        h('div',{style:{marginTop:20,background:'#FAFAFA',border:'1px solid #EEE',borderRadius:8,padding:'14px 20px'}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:M,marginBottom:8}},'Key Formulas at a Glance'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'5px 24px'}},
+            [['Distance','haversine(base, site)'],['Capacity','floor((shift×60−setup−travel)/60)×chairs'],['Volume','senior_pop × capture_rate'],['CPA','(days×daily_cost + vol×var_cost) / volume'],['Score','W_vol×(Vol/Max) − W_cost×(CPA/Max)'],['Scheduler','each day → argmax(remaining_demand)']].map(([n,f])=>
+              h('div',{key:n,style:{display:'flex',gap:8,alignItems:'baseline'}},
+                h('span',{style:{fontSize:11,fontWeight:700,color:M,minWidth:65}},n),
+                h('code',{style:{fontSize:10,color:D,fontFamily:'monospace',background:'#F0F0F0',padding:'2px 5px',borderRadius:3}},f)
+              )
+            )
+          )
+        )
+      ):h('div',{className:'fade-in',style:{maxWidth:760,margin:'0 auto'}},
+        h('div',{style:{marginBottom:20}},
+          h('div',{style:{display:'inline-block',background:as.color||M,color:W,padding:'4px 14px',borderRadius:4,fontSize:10,fontWeight:700,letterSpacing:1,textTransform:'uppercase',marginBottom:8}},flowSteps.find(s=>s.ids.includes(active))?.label||''),
+          h('h2',{style:{color:M,fontSize:28,fontWeight:800,margin:'6px 0 3px 0'}},as.label),
+          h('p',{style:{color:G,fontSize:14,fontWeight:500}},as.subtitle)
+        ),
+        as.detail&&h('div',{style:{marginBottom:20}},
+          as.detail.map((item,i)=>h('div',{key:i,style:{display:'flex',gap:10,padding:'10px 14px',background:i%2===0?LB:W,borderLeft:`4px solid ${M}`,marginBottom:2,borderRadius:'0 4px 4px 0'}},
+            h('span',{style:{color:M,fontWeight:800,fontSize:15,lineHeight:1.3}},String.fromCharCode(65+i)+'.'),
+            h('span',{style:{color:D,fontSize:14,lineHeight:1.5,fontWeight:500}},item)
+          ))
+        ),
+        as.formula&&h('div',{style:{background:D,borderRadius:8,padding:'14px 20px',marginBottom:20}},
+          h('div',{style:{fontSize:10,color:'#AAA',fontWeight:600,letterSpacing:1,textTransform:'uppercase',marginBottom:6}},'Formula'),
+          h('code',{style:{color:'#FFD700',fontSize:16,fontFamily:'monospace',fontWeight:700}},as.formula)
+        ),
+        as.isChart&&as.chartData&&h('div',{style:{background:LB,borderRadius:8,padding:16,border:'1px solid #EEE',marginBottom:20}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:M,marginBottom:4}},'Weekly Appointment Volume (EPIC Data)'),
+          h(MiniBar,{data:as.chartData}),
+          h('div',{style:{display:'flex',gap:14,marginTop:10,fontSize:11,color:G}},
+            h('span',null,h('span',{style:{display:'inline-block',width:10,height:10,background:'#6BAED6',borderRadius:2,marginRight:4}}),h('span',null,'Normal volume')),
+            h('span',null,h('span',{style:{display:'inline-block',width:10,height:10,background:M,borderRadius:2,marginRight:4}}),h('span',null,'Deploy day'))
+          )
+        ),
+        h('div',{style:{display:'flex',justifyContent:'center',gap:7,marginTop:28}},
+          allIds.map(id=>h('div',{key:id,onClick:()=>go(id),title:sections.find(s=>s.id===id)?.label,style:{width:id===active?26:10,height:10,borderRadius:5,background:id===active?M:'#DDD',cursor:'pointer',transition:'all 0.3s ease'}}))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginTop:14}},
+          h('button',{onClick:()=>curIdx>0&&go(allIds[curIdx-1]),disabled:curIdx<=0,style:{background:curIdx>0?LB:'transparent',border:`1.5px solid ${curIdx>0?M:'#EEE'}`,color:curIdx>0?M:'#CCC',padding:'7px 16px',borderRadius:6,fontSize:12,fontWeight:600}},curIdx>0?'← '+sections.find(s=>s.id===allIds[curIdx-1])?.label:''),
+          h('button',{onClick:()=>curIdx<allIds.length-1&&go(allIds[curIdx+1]),disabled:curIdx>=allIds.length-1,style:{background:curIdx<allIds.length-1?LB:'transparent',border:`1.5px solid ${curIdx<allIds.length-1?M:'#EEE'}`,color:curIdx<allIds.length-1?M:'#CCC',padding:'7px 16px',borderRadius:6,fontSize:12,fontWeight:600}},curIdx<allIds.length-1?sections.find(s=>s.id===allIds[curIdx+1])?.label+' →':'')
+        )
+      )
+    ),
+    h('div',{style:{borderTop:'1px solid #EEE',padding:'8px 24px',display:'flex',justifyContent:'space-between',fontSize:11,color:G,background:'#FAFAFA',marginTop:20}},
+      h('span',null,h('b',{style:{color:M}},'Tip: '),'Click any card to explore • Use arrows to navigate • Click Back to Overview for full flow'),
+      h('span',{style:{fontWeight:600,color:M}},'UChicago Medicine | Policy Lab 2026')
+    )
+  );
+}
+ReactDOM.render(h(App),document.getElementById('app'));
+</script>
+</body>
+</html>
