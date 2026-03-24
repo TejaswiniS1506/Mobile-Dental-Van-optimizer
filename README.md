@@ -75,8 +75,18 @@ Optional columns the model will use if present:
 The app handles both the raw column names above and the cleaned versions
 (`Latitude`, `Longitude`, `Name`, etc.) automatically.
 
----
+--- 
 
+## Repo Structure
+```
+Mobile-Dental-Van-optimizer/
+├── app.py                   # Full Streamlit application
+├── sample_sites.csv         # Demo data — upload this to test the app instantly  
+├── Formula_Dictionary.pdf   # Complete mathematical specification of the model
+├── flowchart.html           # Interactive model architecture diagram
+└── requirements.txt         # Python dependencies
+```
+--- 
 ## Tech Stack
 
 `Python` · `Streamlit` · `Plotly` · `pandas` · `EIA API` · `Haversine`
